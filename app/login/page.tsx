@@ -20,44 +20,28 @@ export default function LoginPage() {
     setError(null)
     setSuccess(null)
 
-    // Prova prima il login
-    let { data, error } = await supabase.auth.signInWithPassword({
+    const { error: signInError } = await supabase.auth.signInWithPassword({
       email,
       password,
     })
 
-    // Se l'utente non esiste, prova a registrarlo automaticamente
-    if (error && error.message.includes('Invalid login credentials')) {
-      const signUpRes = await supabase.auth.signUp({
+    if (signInError) {
+      const { error: signUpError } = await supabase.auth.signUp({
         email,
         password,
       })
-      if (signUpRes.error) {
-        setError(signUpRes.error.message)
+      if (signUpError) {
+        setError(signUpError.message)
         setLoading(false)
         return
       }
-      data = signUpRes.data
-    } else if (error) {
-      setError(error.message)
-      setLoading(false)
-      return
     }
 
-    if (data?.user) {
-      // Collega automaticamente il profilo esistente nel database all'utente auth corrente
-      // ID del profilo predefinito specificato nel progetto: 83125bfa-17cf-416b-8ab3-8ba16234ac4c
-      await supabase
-        .from('profili')
-        .update({ auth_user_id: data.user.id })
-        .eq('id', '83125bfa-17cf-416b-8ab3-8ba16234ac4c')
-
-      setSuccess('Accesso effettuato con successo! Reindirizzamento...')
-      setTimeout(() => {
-        router.push('/')
-        router.refresh()
-      }, 800)
-    }
+    setSuccess('Accesso effettuato! Reindirizzamento...')
+    setTimeout(() => {
+      router.push('/')
+      router.refresh()
+    }, 800)
     setLoading(false)
   }
 
