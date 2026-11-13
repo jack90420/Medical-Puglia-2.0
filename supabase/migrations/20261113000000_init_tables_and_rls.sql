@@ -63,7 +63,7 @@ begin
     where id = p_profilo_id and auth_user_id = auth.uid()
   );
 end;
-$$ language plpgsql security definerv;
+$$ language plpgsql security definer;
 
 -- RLS per PROFILI
 drop policy if exists "Users can access own profile" on public.profili;
