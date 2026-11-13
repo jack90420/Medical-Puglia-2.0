@@ -4,8 +4,3 @@
 
 [build.environment]
   NODE_VERSION = "22.11.0"
-
-[[plugins]]
-  package = "@netlify/plugin-nextjs"
-  [plugins.inputs]
-    skip_vulnerability_check = true
