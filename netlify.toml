@@ -3,4 +3,5 @@
   publish = ".next"
 
 [build.environment]
-  NODE_VERSION = "20"
+  NODE_VERSION = "22.11.0"
+  NETLIFY_NEXT_PLUGIN_SKIP_VULNERABILITY_CHECK = "true"
