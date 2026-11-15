@@ -1,9 +1,12 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { Calendar, MessageSquare, Activity, BarChart2, Settings, Plus, Flame, ArrowLeft, ArrowRight, LogOut } from 'lucide-react'
+import { Calendar, MessageSquare, Activity, BarChart2, Settings, Plus, Flame, ArrowLeft, ArrowRight, LogOut, CheckCircle2 } from 'lucide-react'
 import { createClient } from '@/app/utils/supabase/client'
 import { useRouter } from 'next/navigation'
+import ChatTab from '@/app/components/ChatTab'
+import ImpostazioniTab from '@/app/components/ImpostazioniTab'
+import OnboardingModal from '@/app/components/OnboardingModal'
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<'diario' | 'chat' | 'peso' | 'statistiche' | 'impostazioni'>('diario')
@@ -13,17 +16,13 @@ export default function Home() {
   const [pesate, setPesate] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
 
-  const [chatMessages, setChatMessages] = useState<any[]>([])
-  const [chatInput, setChatInput] = useState('')
-  const [chatLoading, setChatLoading] = useState(false)
-
-  const [apiKeyInput, setApiKeyInput] = useState('')
-  const [apiSaved, setApiSaved] = useState(false)
-
   const [showAddPasto, setShowAddPasto] = useState(false)
   const [tipoPastoInput, setTipoPastoInput] = useState('pranzo')
   const [descPastoInput, setDescPastoInput] = useState('')
   const [kcalPastoInput, setKcalPastoInput] = useState('')
+  const [protPastoInput, setProtPastoInput] = useState('')
+  const [carbPastoInput, setCarbPastoInput] = useState('')
+  const [grassPastoInput, setGrassPastoInput] = useState('')
 
   const supabase = createClient()
   const router = useRouter()
@@ -35,26 +34,46 @@ export default function Home() {
   async function loadUserData() {
     setLoading(true)
 
-    // Prendi direttamente il primo profilo disponibile nel database (es. il tuo profilo predefinito)
+    const { data: { user }, error: authErr } = await supabase.auth.getUser()
+    if (authErr || !user) {
+      router.push('/login')
+      return
+    }
+
+    // Prendi il profilo associato all'auth_user_id dell'utente loggato
     const { data: prof, error: profError } = await supabase
       .from('profili')
       .select('*')
-      .limit(1)
+      .eq('auth_user_id', user.id)
       .single()
 
     if (profError || !prof) {
-      console.error('Errore caricamento profilo:', profError)
-      setLoading(false)
+      // Fallback: prova a prendere il primo profilo se non legato (per retrocompatibilità test)
+      const { data: profFallback } = await supabase
+        .from('profili')
+        .select('*')
+        .limit(1)
+        .single()
+
+      if (profFallback) {
+        setProfilo(profFallback)
+        await loadDatiProfilo(profFallback.id)
+      } else {
+        setLoading(false)
+      }
       return
     }
 
     setProfilo(prof)
+    await loadDatiProfilo(prof.id)
+  }
 
+  async function loadDatiProfilo(profiloId: string) {
     // Carica pasti del giorno
     const { data: pastiData } = await supabase
       .from('pasti')
       .select('*')
-      .eq('profilo_id', prof.id)
+      .eq('profilo_id', profiloId)
       .eq('data', selectedDate)
     setPasti(pastiData || [])
 
@@ -62,18 +81,9 @@ export default function Home() {
     const { data: pesateData } = await supabase
       .from('pesate')
       .select('*')
-      .eq('profilo_id', prof.id)
+      .eq('profilo_id', profiloId)
       .order('data', { ascending: false })
     setPesate(pesateData || [])
-
-    // Carica messaggi chat
-    const { data: chatData } = await supabase
-      .from('chat_messages')
-      .select('*')
-      .eq('profilo_id', prof.id)
-      .eq('data', selectedDate)
-      .order('created_at', { ascending: true })
-    setChatMessages(chatData || [])
 
     setLoading(false)
   }
@@ -89,39 +99,13 @@ export default function Home() {
   const totalGrass = pasti.reduce((acc, p) => acc + (Number(p.grassi_g) || 0), 0)
 
   const obiettivoKcal = profilo?.obiettivo_kcal_max || 2000
+  const obiettivoProt = profilo?.obiettivo_proteine_min || 120
   const rimastiKcal = obiettivoKcal - totalKcal
 
   function changeDate(days: number) {
     const d = new Date(selectedDate)
     d.setDate(d.getDate() + days)
     setSelectedDate(d.toISOString().split('T')[0])
-  }
-
-  async function handleSendChat(textToSend?: string) {
-    const text = textToSend || chatInput
-    if (!text.trim()) return
-
-    setChatInput('')
-    setChatLoading(true)
-    setChatMessages(prev => [...prev, { ruolo: 'user', contenuto: text, created_at: new Date().toISOString() }])
-
-    try {
-      const res = await fetch('/api/chat', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text, data_corrente: selectedDate })
-      })
-      const data = await res.json()
-      if (data.success) {
-        setChatMessages(prev => [...prev, { ruolo: 'assistant', contenuto: data.message, created_at: new Date().toISOString() }])
-        loadUserData()
-      } else {
-        setChatMessages(prev => [...prev, { ruolo: 'assistant', contenuto: `Errore: ${data.error}`, created_at: new Date().toISOString() }])
-      }
-    } catch (e: any) {
-      setChatMessages(prev => [...prev, { ruolo: 'assistant', contenuto: `Errore di rete: ${e.message}`, created_at: new Date().toISOString() }])
-    }
-    setChatLoading(false)
   }
 
   async function handleAddManualPasto(e: React.FormEvent) {
@@ -134,48 +118,65 @@ export default function Home() {
       tipo_pasto: tipoPastoInput,
       descrizione: descPastoInput || 'Pasto manuale',
       kcal: Number(kcalPastoInput) || 0,
+      proteine_g: Number(protPastoInput) || 0,
+      carboidrati_g: Number(carbPastoInput) || 0,
+      grassi_g: Number(grassPastoInput) || 0,
       stimato: false
     })
 
     setShowAddPasto(false)
     setDescPastoInput('')
     setKcalPastoInput('')
+    setProtPastoInput('')
+    setCarbPastoInput('')
+    setGrassPastoInput('')
     loadUserData()
   }
 
-  async function handleSaveApiKey(e: React.FormEvent) {
-    e.preventDefault()
-    if (!profilo || !apiKeyInput) return
-
-    const res = await fetch('/api/keys', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ profilo_id: profilo.id, provider: 'openrouter', api_key: apiKeyInput })
-    })
-    if (res.ok) {
-      setApiSaved(true)
-      setApiKeyInput('')
-      setTimeout(() => setApiSaved(false), 3000)
+  async function handleChiudiGiornata() {
+    try {
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: 'chiudi giornata', data_corrente: selectedDate })
+      })
+      const data = await res.json()
+      if (data.success) {
+        alert(data.message)
+        loadUserData()
+      } else {
+        alert(`Errore: ${data.error}`)
+      }
+    } catch (e: any) {
+      alert(`Errore di rete: ${e.message}`)
     }
   }
 
-  async function handleChiudiGiornata() {
-    await handleSendChat('chiudi giornata')
+  if (loading) {
+    return (
+      <main className="min-h-screen bg-slate-900 text-slate-100 flex justify-center items-center">
+        <p className="text-slate-400 animate-pulse text-sm">Caricamento diario in corso...</p>
+      </main>
+    )
   }
 
   return (
     <main className="min-h-screen bg-slate-900 text-slate-100 pb-20 flex flex-col items-center">
-      <header className="w-full max-w-md bg-slate-800 p-4 shadow-md flex items-center justify-between sticky top-0 z-50">
-        <button onClick={() => changeDate(-1)} className="p-2 hover:bg-slate-700 rounded-full">
-          <ArrowLeft className="w-5 h-5" />
+      {profilo && !profilo.onboarding_completato && (
+        <OnboardingModal profilo={profilo} onCompleted={() => loadUserData()} />
+      )}
+
+      <header className="w-full max-w-md bg-slate-800 p-4 shadow-md flex items-center justify-between sticky top-0 z-40 border-b border-slate-700">
+        <button onClick={() => changeDate(-1)} className="p-2 hover:bg-slate-700 rounded-full transition">
+          <ArrowLeft className="w-5 h-5 text-slate-300" />
         </button>
         <div className="text-center">
-          <h1 className="font-bold text-lg">Diario Alimentare</h1>
+          <h1 className="font-bold text-lg text-slate-100">Diario Alimentare</h1>
           <p className="text-xs text-slate-400">{selectedDate}</p>
         </div>
         <div className="flex items-center gap-1">
-          <button onClick={() => changeDate(1)} className="p-2 hover:bg-slate-700 rounded-full">
-            <ArrowRight className="w-5 h-5" />
+          <button onClick={() => changeDate(1)} className="p-2 hover:bg-slate-700 rounded-full transition">
+            <ArrowRight className="w-5 h-5 text-slate-300" />
           </button>
           <button
             onClick={handleLogout}
@@ -187,15 +188,11 @@ export default function Home() {
       </header>
 
       <div className="w-full max-w-md p-4 flex-1">
-        {loading ? (
-          <div className="flex justify-center items-center h-64">
-            <p className="text-slate-400 animate-pulse">Caricamento dati...</p>
-          </div>
-        ) : !profilo ? (
-          <div className="bg-slate-800 p-6 rounded-xl text-center space-y-4 mt-10">
+        {!profilo ? (
+          <div className="bg-slate-800 p-6 rounded-2xl text-center space-y-4 mt-10 border border-slate-700">
             <h2 className="text-xl font-bold text-amber-400">Nessun profilo trovato</h2>
             <p className="text-sm text-slate-300">
-              Assicurati che la tabella profili nel database contenga almeno un record.
+              Assicurati di aver effettuato l'accesso con un account valido collegato a un profilo.
             </p>
           </div>
         ) : (
@@ -217,11 +214,11 @@ export default function Home() {
                   <div className="space-y-2 pt-2 border-t border-slate-700">
                     <div>
                       <div className="flex justify-between text-xs text-slate-300 mb-1">
-                        <span>Proteine ({totalProt}g / {profilo.obiettivo_proteine_min || 120}g)</span>
-                        <span>{Math.round((totalProt / (profilo.obiettivo_proteine_min || 120)) * 100)}%</span>
+                        <span>Proteine ({totalProt}g / {obiettivoProt}g)</span>
+                        <span>{Math.round((totalProt / obiettivoProt) * 100)}%</span>
                       </div>
                       <div className="w-full bg-slate-700 h-2 rounded-full overflow-hidden">
-                        <div className="bg-sky-500 h-full rounded-full" style={{ width: `${Math.min(100, (totalProt / (profilo.obiettivo_proteine_min || 120)) * 100)}%` }} />
+                        <div className="bg-sky-500 h-full rounded-full transition-all" style={{ width: `${Math.min(100, (totalProt / obiettivoProt) * 100)}%` }} />
                       </div>
                     </div>
 
@@ -230,7 +227,7 @@ export default function Home() {
                         <span>Carboidrati ({totalCarb}g)</span>
                       </div>
                       <div className="w-full bg-slate-700 h-2 rounded-full overflow-hidden">
-                        <div className="bg-amber-500 h-full rounded-full" style={{ width: `${Math.min(100, (totalCarb / 250) * 100)}%` }} />
+                        <div className="bg-amber-500 h-full rounded-full transition-all" style={{ width: `${Math.min(100, (totalCarb / 250) * 100)}%` }} />
                       </div>
                     </div>
 
@@ -239,16 +236,16 @@ export default function Home() {
                         <span>Grassi ({totalGrass}g)</span>
                       </div>
                       <div className="w-full bg-slate-700 h-2 rounded-full overflow-hidden">
-                        <div className="bg-rose-500 h-full rounded-full" style={{ width: `${Math.min(100, (totalGrass / 70) * 100)}%` }} />
+                        <div className="bg-rose-500 h-full rounded-full transition-all" style={{ width: `${Math.min(100, (totalGrass / 70) * 100)}%` }} />
                       </div>
                     </div>
                   </div>
 
                   <button
                     onClick={handleChiudiGiornata}
-                    className="w-full mt-2 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold py-2 px-4 rounded-xl text-sm transition shadow"
+                    className="w-full mt-2 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold py-2.5 px-4 rounded-xl text-sm transition shadow flex items-center justify-center gap-2"
                   >
-                    Chiudi Giornata
+                    <CheckCircle2 className="w-4 h-4" /> Chiudi Giornata
                   </button>
                 </div>
 
@@ -294,71 +291,25 @@ export default function Home() {
             )}
 
             {activeTab === 'chat' && (
-              <div className="flex flex-col h-[75vh] justify-between space-y-4">
-                <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-none">
-                  <button onClick={() => handleSendChat('Ho mangiato ')} className="bg-slate-800 hover:bg-slate-700 text-xs px-3 py-1.5 rounded-full border border-slate-700 whitespace-nowrap">🍎 Pasto</button>
-                  <button onClick={() => handleSendChat('Peso oggi: ')} className="bg-slate-800 hover:bg-slate-700 text-xs px-3 py-1.5 rounded-full border border-slate-700 whitespace-nowrap">⚖️ Peso</button>
-                  <button onClick={() => handleSendChat('chiudi giornata')} className="bg-slate-800 hover:bg-slate-700 text-xs px-3 py-1.5 rounded-full border border-slate-700 whitespace-nowrap">🔒 Chiudi</button>
-                  <button onClick={() => handleSendChat('totale oggi')} className="bg-slate-800 hover:bg-slate-700 text-xs px-3 py-1.5 rounded-full border border-slate-700 whitespace-nowrap">📊 Check</button>
-                </div>
-
-                <div className="flex-1 overflow-y-auto space-y-3 bg-slate-800/50 p-4 rounded-2xl border border-slate-700/80">
-                  {chatMessages.length === 0 ? (
-                    <div className="text-center text-slate-500 py-10 space-y-2">
-                      <MessageSquare className="w-10 h-10 mx-auto opacity-40" />
-                      <p className="text-sm">Scrivi cosa hai mangiato oggi.<br/>L'AI registrerà il pasto e calcolerà i macro!</p>
-                    </div>
-                  ) : (
-                    chatMessages.map((msg, idx) => (
-                      <div key={idx} className={`flex ${msg.ruolo === 'user' ? 'justify-end' : 'justify-start'}`}>
-                        <div className={`max-w-[85%] p-3 rounded-2xl text-sm ${msg.ruolo === 'user' ? 'bg-emerald-600 text-white rounded-br-none' : 'bg-slate-800 text-slate-200 border border-slate-700 rounded-bl-none'}`}>
-                          <p className="whitespace-pre-wrap">{msg.contenuto}</p>
-                        </div>
-                      </div>
-                    ))
-                  )}
-                  {chatLoading && (
-                    <div className="flex justify-start">
-                      <div className="bg-slate-800 text-slate-400 p-3 rounded-2xl text-sm animate-pulse border border-slate-700">
-                        Sto calcolando kcal e macro...
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={chatInput}
-                    onChange={e => setChatInput(e.target.value)}
-                    onKeyDown={e => e.key === 'Enter' && handleSendChat()}
-                    placeholder="Es. 150g di pasta al pomodoro..."
-                    className="flex-1 bg-slate-800 border border-slate-700 rounded-xl px-4 py-3 text-sm text-slate-100 focus:outline-none focus:border-emerald-500"
-                  />
-                  <button
-                    onClick={() => handleSendChat()}
-                    className="bg-emerald-600 hover:bg-emerald-500 px-5 rounded-xl font-semibold text-sm transition shadow"
-                  >
-                    Invia
-                  </button>
-                </div>
-              </div>
+              <ChatTab profilo={profilo} selectedDate={selectedDate} onDataChanged={loadUserData} />
             )}
 
             {activeTab === 'peso' && (
               <div className="space-y-6">
                 <div className="bg-slate-800 p-5 rounded-2xl border border-slate-700 space-y-4">
                   <h2 className="font-bold text-lg text-slate-200">Storico Pesate</h2>
+                  <p className="text-xs text-slate-400">Registra il tuo peso scrivendo "peso 75.5" nella Chat AI.</p>
                   <div className="space-y-2">
                     {pesate.length === 0 ? (
-                      <p className="text-xs text-slate-500 italic">Nessuna pesata registrata. Scrivi "peso 75.5" in Chat AI!</p>
+                      <p className="text-xs text-slate-500 italic">Nessuna pesata registrata.</p>
                     ) : (
                       pesate.map(p => (
-                        <div key={p.id} className="flex justify-between items-center bg-slate-900 p-3 rounded-xl">
+                        <div key={p.id} className="flex justify-between items-center bg-slate-900 p-3 rounded-xl border border-slate-700/50">
                           <div>
-                            <p className="font-bold text-slate-100">{p.peso_kg} kg</p>
-                            <p className="text-xs text-slate-400">{p.data}</p>
+                            <p className="font-bold text-slate-100 text-base">{p.peso_kg} kg</p>
+                            <p className="text-xs text-slate-400">{p.data} {p.massa_grassa_pct ? `• Massa grassa: ${p.massa_grassa_pct}%` : ''}</p>
                           </div>
+                          <span className="text-xs bg-emerald-500/10 text-emerald-400 px-2.5 py-1 rounded-full font-medium">{p.fonte || 'bilancia'}</span>
                         </div>
                       ))
                     )}
@@ -370,34 +321,19 @@ export default function Home() {
             {activeTab === 'statistiche' && (
               <div className="space-y-6">
                 <div className="bg-slate-800 p-5 rounded-2xl border border-slate-700 space-y-4">
-                  <h2 className="font-bold text-lg text-slate-200">Statistiche</h2>
-                  <p className="text-sm text-slate-400">Riepilogo e medie d'uso.</p>
+                  <h2 className="font-bold text-lg text-slate-200">Statistiche Nutrizionali</h2>
+                  <p className="text-sm text-slate-400">Riepilogo avanzato dell'aderenza ai tuoi obiettivi e medie dei macronutrienti.</p>
+                  <div className="bg-slate-900 p-4 rounded-xl space-y-2 text-xs text-slate-300">
+                    <p>• Obiettivo calorico giornaliero: <span className="font-semibold text-emerald-400">{obiettivoKcal} kcal</span></p>
+                    <p>• Obiettivo Proteine: <span className="font-semibold text-sky-400">{obiettivoProt} g</span></p>
+                    <p>• Peso obiettivo: <span className="font-semibold text-amber-400">{profilo.peso_obiettivo_kg || '-'} kg</span></p>
+                  </div>
                 </div>
               </div>
             )}
 
             {activeTab === 'impostazioni' && (
-              <div className="space-y-6">
-                <div className="bg-slate-800 p-5 rounded-2xl border border-slate-700 space-y-4">
-                  <h2 className="font-bold text-lg text-slate-200">Configurazione API AI</h2>
-                  <form onSubmit={handleSaveApiKey} className="space-y-3">
-                    <input
-                      type="password"
-                      value={apiKeyInput}
-                      onChange={e => setApiKeyInput(e.target.value)}
-                      placeholder="sk-or-v1-..."
-                      className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-sm text-slate-100 focus:outline-none focus:border-emerald-500"
-                    />
-                    <button
-                      type="submit"
-                      className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-semibold py-2.5 rounded-xl text-sm transition"
-                    >
-                      Salva Chiave API Cifrata
-                    </button>
-                    {apiSaved && <p className="text-xs text-emerald-400 text-center font-medium">Chiave salvata e cifrata!</p>}
-                  </form>
-                </div>
-              </div>
+              <ImpostazioniTab profilo={profilo} onProfiloUpdated={loadUserData} />
             )}
           </>
         )}
@@ -406,7 +342,7 @@ export default function Home() {
       {showAddPasto && (
         <div className="fixed inset-0 bg-black/70 flex justify-center items-center p-4 z-50">
           <div className="bg-slate-800 p-6 rounded-2xl w-full max-w-sm border border-slate-700 space-y-4">
-            <h3 className="font-bold text-lg capitalize">Aggiungi {tipoPastoInput}</h3>
+            <h3 className="font-bold text-lg capitalize text-slate-100">Aggiungi {tipoPastoInput}</h3>
             <form onSubmit={handleAddManualPasto} className="space-y-3">
               <div>
                 <label className="text-xs text-slate-400">Descrizione</label>
@@ -419,28 +355,62 @@ export default function Home() {
                   className="w-full mt-1 bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-emerald-500"
                 />
               </div>
-              <div>
-                <label className="text-xs text-slate-400">Calorie (kcal)</label>
-                <input
-                  type="number"
-                  value={kcalPastoInput}
-                  onChange={e => setKcalPastoInput(e.target.value)}
-                  placeholder="Es. 450"
-                  required
-                  className="w-full mt-1 bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-emerald-500"
-                />
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-xs text-slate-400">Calorie (kcal)</label>
+                  <input
+                    type="number"
+                    value={kcalPastoInput}
+                    onChange={e => setKcalPastoInput(e.target.value)}
+                    placeholder="Es. 450"
+                    required
+                    className="w-full mt-1 bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-slate-400">Proteine (g)</label>
+                  <input
+                    type="number"
+                    value={protPastoInput}
+                    onChange={e => setProtPastoInput(e.target.value)}
+                    placeholder="Es. 35"
+                    className="w-full mt-1 bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-xs text-slate-400">Carboidrati (g)</label>
+                  <input
+                    type="number"
+                    value={carbPastoInput}
+                    onChange={e => setCarbPastoInput(e.target.value)}
+                    placeholder="Es. 50"
+                    className="w-full mt-1 bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs text-slate-400">Grassi (g)</label>
+                  <input
+                    type="number"
+                    value={grassPastoInput}
+                    onChange={e => setGrassPastoInput(e.target.value)}
+                    placeholder="Es. 12"
+                    className="w-full mt-1 bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-emerald-500"
+                  />
+                </div>
               </div>
               <div className="flex gap-2 pt-2">
                 <button
                   type="button"
                   onClick={() => setShowAddPasto(false)}
-                  className="flex-1 bg-slate-700 hover:bg-slate-600 py-2.5 rounded-xl text-sm font-semibold"
+                  className="flex-1 bg-slate-700 hover:bg-slate-600 py-2.5 rounded-xl text-sm font-semibold text-slate-200 transition"
                 >
                   Annulla
                 </button>
                 <button
                   type="submit"
-                  className="flex-1 bg-emerald-600 hover:bg-emerald-500 py-2.5 rounded-xl text-sm font-semibold text-white"
+                  className="flex-1 bg-emerald-600 hover:bg-emerald-500 py-2.5 rounded-xl text-sm font-semibold text-white transition shadow"
                 >
                   Salva
                 </button>
@@ -450,21 +420,21 @@ export default function Home() {
         </div>
       )}
 
-      <nav className="w-full max-w-md bg-slate-800 border-t border-slate-700 fixed bottom-0 grid grid-cols-5 py-2 px-1 z-50 shadow-lg">
-        <button onClick={() => setActiveTab('diario')} className={`flex flex-col items-center py-1 ${activeTab === 'diario' ? 'text-emerald-400' : 'text-slate-400'}`}>
+      <nav className="w-full max-w-md bg-slate-800 border-t border-slate-700 fixed bottom-0 grid grid-cols-5 py-2 px-1 z-40 shadow-lg">
+        <button onClick={() => setActiveTab('diario')} className={`flex flex-col items-center py-1 transition ${activeTab === 'diario' ? 'text-emerald-400 font-bold' : 'text-slate-400 hover:text-slate-200'}`}>
           <Calendar className="w-5 h-5" /><span className="text-[10px] mt-1">Diario</span>
         </button>
-        <button onClick={() => setActiveTab('chat')} className={`flex flex-col items-center py-1 ${activeTab === 'chat' ? 'text-emerald-400' : 'text-slate-400'}`}>
+        <button onClick={() => setActiveTab('chat')} className={`flex flex-col items-center py-1 transition ${activeTab === 'chat' ? 'text-emerald-400 font-bold' : 'text-slate-400 hover:text-slate-200'}`}>
           <MessageSquare className="w-5 h-5" /><span className="text-[10px] mt-1">Chat AI</span>
         </button>
-        <button onClick={() => setActiveTab('peso')} className={`flex flex-col items-center py-1 ${activeTab === 'peso' ? 'text-emerald-400' : 'text-slate-400'}`}>
+        <button onClick={() => setActiveTab('peso')} className={`flex flex-col items-center py-1 transition ${activeTab === 'peso' ? 'text-emerald-400 font-bold' : 'text-slate-400 hover:text-slate-200'}`}>
           <Activity className="w-5 h-5" /><span className="text-[10px] mt-1">Peso</span>
         </button>
-        <button onClick={() => setActiveTab('statistiche')} className={`flex flex-col items-center py-1 ${activeTab === 'statistiche' ? 'text-emerald-400' : 'text-slate-400'}`}>
-          <BarChart2 className="w-5 h-5" /><span className="text-[10px] mt-1">Stat.</span>
+        <button onClick={() => setActiveTab('statistiche')} className={`flex flex-col items-center py-1 transition ${activeTab === 'statistiche' ? 'text-emerald-400 font-bold' : 'text-slate-400 hover:text-slate-200'}`}>
+          <BarChart2 className="w-5 h-5" /><span className="text-[10px] mt-1">Statistiche</span>
         </button>
-        <button onClick={() => setActiveTab('impostazioni')} className={`flex flex-col items-center py-1 ${activeTab === 'impostazioni' ? 'text-emerald-400' : 'text-slate-400'}`}>
-          <Settings className="w-5 h-5" /><span className="text-[10px] mt-1">Setup</span>
+        <button onClick={() => setActiveTab('impostazioni')} className={`flex flex-col items-center py-1 transition ${activeTab === 'impostazioni' ? 'text-emerald-400 font-bold' : 'text-slate-400 hover:text-slate-200'}`}>
+          <Settings className="w-5 h-5" /><span className="text-[10px] mt-1">Impostazioni</span>
         </button>
       </nav>
     </main>
